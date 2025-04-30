@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'task_form.dart';
 import 'task_display.dart';
+import 'task_sorting.dart';
 
-void main() {
+Future<void> main() async {
+  await dotenv.load();
   runApp(const MyApp());
 }
 
@@ -54,15 +57,61 @@ class MyHomePage extends StatefulWidget {
 
 class _MyHomePageState extends State<MyHomePage> {
   List<Map<String, dynamic>> _tasks = [];
+  late TaskSortingService sortingService;
+  bool _sorting = false;
 
-  void _addNewTask(String task, DateTime date, String difficulty) {
+  @override
+  void initState() {
+    super.initState();
+    sortingService = TaskSortingService(dotenv.env['OPENROUTER_API_KEY']!);
+  }
+
+  void _addNewTask(String task, DateTime date, String difficulty) async {
     setState(() {
       _tasks.add({
-        'id': DateTime.now().toString(), // Unique identifier
+        'id': DateTime.now().toString(),
         'task': task,
         'date': date,
         'difficulty': difficulty,
       });
+    });
+    await _sortTasksAI();
+  }
+
+  Future<void> _sortTasksAI() async {
+    if (_tasks.isEmpty) return;
+    setState(() {
+      _sorting = true;
+    });
+    try {
+      String sortedNames = await sortingService.sortTasksWithDeepSeek(_tasks);
+      List<String> names = sortedNames
+          .split('\n')
+          .map((e) => e.trim())
+          .where((e) => e.isNotEmpty)
+          .toList();
+      // Reorder _tasks based on AI output
+      List<Map<String, dynamic>> newOrder = [];
+      for (String name in names) {
+        final found = _tasks.firstWhere((t) => t['task'] == name, orElse: () => {});
+        if (found.isNotEmpty) {
+          newOrder.add(found);
+        }
+      }
+      // Add any tasks DeepSeek missed (shouldn't happen)
+      for (final t in _tasks) {
+        if (!newOrder.contains(t)) {
+          newOrder.add(t);
+        }
+      }
+      setState(() {
+        _tasks = newOrder;
+      });
+    } catch (e) {
+      print('DeepSeek sorting failed: $e');
+    }
+    setState(() {
+      _sorting = false;
     });
   }
 
@@ -74,6 +123,7 @@ class _MyHomePageState extends State<MyHomePage> {
       final task = _tasks.removeAt(oldIndex);
       _tasks.insert(newIndex, task);
     });
+    // Optional: you could re-run the AI sort here if desired
   }
 
   Future<void> _navigateToAddTask() async {
@@ -98,11 +148,18 @@ class _MyHomePageState extends State<MyHomePage> {
             icon: const Icon(Icons.add),
             onPressed: _navigateToAddTask,
           ),
+          IconButton(
+            icon: const Icon(Icons.sort),
+            tooltip: "AI Sort Tasks",
+            onPressed: _sortTasksAI,
+          ),
         ],
       ),
       body: Container(
         color: Colors.white,
-        child: _tasks.isEmpty
+        child: _sorting
+            ? Center(child: CircularProgressIndicator())
+            : _tasks.isEmpty
             ? Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
@@ -129,7 +186,11 @@ class _MyHomePageState extends State<MyHomePage> {
             ],
           ),
         )
-            : TaskDisplay(tasks: _tasks, onReorder: _reorderTasks),
+            : TaskDisplay(
+          tasks: _tasks,
+          onReorder: _reorderTasks,
+          sortingService: sortingService,
+        ),
       ),
       floatingActionButton: FloatingActionButton(
         backgroundColor: Colors.yellow[800],
